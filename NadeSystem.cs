@@ -58,6 +58,11 @@ public class GrenadeData
     [JsonPropertyName("description")]
     public string Description { get; set; } = "";
 
+    // Probability (0..1) this lineup is actually thrown when triggered.
+    // Absent in JSON => 1.0 (always eligible, current behavior).
+    [JsonPropertyName("weight")]
+    public float Weight { get; set; } = 1f;
+
     [JsonIgnore] public string TeamTag { get; set; } = "";
 
     // ── Computed zone properties (not serialized) ────────────
@@ -315,6 +320,8 @@ public class NadeSystemPlugin : BasePlugin
                 foreach (var entry in list)
                 {
                     entry.Description ??= "";
+                    if (entry.Weight <= 0f)      entry.Weight = 1f;   // treat 0/negative/missing-as-0 as "always"
+                    else if (entry.Weight > 1f)  entry.Weight = 1f;
                     // Rewrite grenadeType to "decoy" if description contains "decoy"
                     if (entry.Description.Contains("decoy", StringComparison.OrdinalIgnoreCase))
                         entry.GrenadeType = "decoy";
@@ -389,6 +396,7 @@ public class NadeSystemPlugin : BasePlugin
                 if (gtype == "decoy")
                 {
                     if (IsOnCooldown(g.Id)) continue;
+                    if (!PassesWeightRoll(g)) continue;
                     if (dx * dx + dy * dy > 200f * 200f) continue;
                     if (MathF.Abs(dz) > 85f) continue;
                     RegisterCooldown(g.Id, "decoy");
@@ -401,6 +409,9 @@ public class NadeSystemPlugin : BasePlugin
                 // Vertical distance check
                 if (MathF.Abs(dz) > 85f) continue;
                 if (IsOnCooldown(g.Id)) continue;
+
+                // Per-lineup probability dial (weight). Skip this attempt if the roll fails.
+                if (!PassesWeightRoll(g)) continue;
                 // Probability attempt cooldown
                 if (gtype == "smoke" && _smokeCooldownBots.Contains((uint)bot.Index)) continue;
                 // Smoke Overlap Check
@@ -1091,6 +1102,10 @@ public class NadeSystemPlugin : BasePlugin
 
     private bool IsOnCooldown(string id)
         => _cooldowns.Any(c => c.GrenadeId == id && c.ExpiresAt > Server.CurrentTime);
+
+    // Returns false when this lineup should be skipped this attempt due to its weight.
+    private static bool PassesWeightRoll(GrenadeData g)
+        => g.Weight >= 1f || Random.Shared.NextDouble() < g.Weight;
 
     private void RegisterCooldown(string id, string gtype)
     {
