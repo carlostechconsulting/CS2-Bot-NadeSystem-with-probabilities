@@ -320,7 +320,7 @@ public class NadeSystemPlugin : BasePlugin
                 foreach (var entry in list)
                 {
                     entry.Description ??= "";
-                    if (entry.Weight <= 0f)      entry.Weight = 1f;   // treat 0/negative/missing-as-0 as "always"
+                    if (entry.Weight < 0f)       entry.Weight = 0f;   // clamp negatives to "never" (0 = never, missing defaults to 1 = always)
                     else if (entry.Weight > 1f)  entry.Weight = 1f;
                     // Rewrite grenadeType to "decoy" if description contains "decoy"
                     if (entry.Description.Contains("decoy", StringComparison.OrdinalIgnoreCase))
