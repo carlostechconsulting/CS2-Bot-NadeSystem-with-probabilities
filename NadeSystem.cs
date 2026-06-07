@@ -106,8 +106,8 @@ public class RoundCounter
 public class NadeSystemPlugin : BasePlugin
 {
     public override string ModuleName    => "NadeSystem";
-    public override string ModuleVersion => "1.1.0";
-    public override string ModuleAuthor  => "ed0ard";
+    public override string ModuleVersion => "1.2.0";
+    public override string ModuleAuthor  => "ed0ard. Extended by Carlos (melo.carlos.h.s@gmail.com)";
 
     // grenades folder lives inside the plugin directory
     private string DataDir => Path.Combine(ModuleDirectory, "grenades");
@@ -144,6 +144,11 @@ public class NadeSystemPlugin : BasePlugin
     // Normal Mode
     private Dictionary<int,  int>    _earlySmokeCountByTeam   = new();
     private Dictionary<uint, HashSet<string>> _botInFlashZone = new();
+    // Per-(bot, grenade) weight-roll cache: bot index → (grenade id → roll result).
+    // The weight probability is evaluated ONCE when a bot enters a lineup's trigger
+    // zone and cached here until it leaves, so a bot lingering in the zone does not
+    // re-roll every scan (which would compound a low weight to near-certainty).
+    private Dictionary<uint, Dictionary<string, bool>> _botWeightZone = new();
     // Normal Mode: post-throw probability window for flash
     // key = botIndex, value = (windowExpiresAt, blindRatio)
     private Dictionary<uint, (float ExpiresAt, float Ratio)> _botFlashRatioWindow = new();
@@ -392,11 +397,19 @@ public class NadeSystemPlugin : BasePlugin
                 float dx = pos.X - g.ZoneX;
                 float dy = pos.Y - g.ZoneY;
                 float dz = pos.Z+ viewOffsetZ - g.ProjectilePosition.Z;
+
+                // Per-lineup probability dial (weight). Rolled ONCE on zone entry and
+                // cached until the bot leaves — not every scan — so low weights actually
+                // mean "thrown on ~weight of zone visits" regardless of dwell time / tick rate.
+                float zoneRadius = gtype == "decoy" ? 200f : g.ZoneRadius;
+                bool inWeightZone = dx * dx + dy * dy <= zoneRadius * zoneRadius
+                                 && MathF.Abs(dz) <= 85f;
+                if (!PassesWeightZone(bot, g, inWeightZone)) continue;
+
                 // DECOY: handled entirely here, bypasses all other checks
                 if (gtype == "decoy")
                 {
                     if (IsOnCooldown(g.Id)) continue;
-                    if (!PassesWeightRoll(g)) continue;
                     if (dx * dx + dy * dy > 200f * 200f) continue;
                     if (MathF.Abs(dz) > 85f) continue;
                     RegisterCooldown(g.Id, "decoy");
@@ -410,8 +423,6 @@ public class NadeSystemPlugin : BasePlugin
                 if (MathF.Abs(dz) > 85f) continue;
                 if (IsOnCooldown(g.Id)) continue;
 
-                // Per-lineup probability dial (weight). Skip this attempt if the roll fails.
-                if (!PassesWeightRoll(g)) continue;
                 // Probability attempt cooldown
                 if (gtype == "smoke" && _smokeCooldownBots.Contains((uint)bot.Index)) continue;
                 // Smoke Overlap Check
@@ -1107,6 +1118,34 @@ public class NadeSystemPlugin : BasePlugin
     private static bool PassesWeightRoll(GrenadeData g)
         => g.Weight >= 1f || Random.Shared.NextDouble() < g.Weight;
 
+    // Gates the weight probability on a per-zone-entry basis for a given bot+lineup.
+    //  - Outside the zone: forget any cached roll (next entry re-rolls) and return false.
+    //  - First scan inside the zone: roll PassesWeightRoll once and cache the result.
+    //  - Subsequent scans while still inside: return the cached result (no re-roll).
+    // This keeps "weight" a per-visit probability instead of a per-scan one.
+    private bool PassesWeightZone(CCSPlayerController bot, GrenadeData g, bool inZone)
+    {
+        uint bidx = (uint)bot.Index;
+        if (!_botWeightZone.TryGetValue(bidx, out var rolled))
+        {
+            rolled = new Dictionary<string, bool>();
+            _botWeightZone[bidx] = rolled;
+        }
+
+        if (!inZone)
+        {
+            rolled.Remove(g.Id);   // left the zone — next entry rolls fresh
+            return false;          // not in zone: nothing to throw anyway
+        }
+
+        if (!rolled.TryGetValue(g.Id, out bool pass))
+        {
+            pass = PassesWeightRoll(g);   // entered the zone: roll exactly once
+            rolled[g.Id] = pass;
+        }
+        return pass;
+    }
+
     private void RegisterCooldown(string id, string gtype)
     {
         _cooldowns.RemoveAll(c => c.GrenadeId == id);
@@ -1162,6 +1201,7 @@ public class NadeSystemPlugin : BasePlugin
         _botMolotovDmgStart.Clear();
         _earlySmokeCountByTeam.Clear();
         _botInFlashZone.Clear();
+        _botWeightZone.Clear();
         _botFlashRatioWindow.Clear();
         _botFlashImmunityUntil.Clear();
         _molotovEscapeSmokeCooldown.Clear();
